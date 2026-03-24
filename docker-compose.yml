@@ -1,0 +1,38 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: vitalwatch
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  backend:
+    image: python:3.11-slim
+    working_dir: /app/backend
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    command: >
+      bash -c "pip install -r ../requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/vitalwatch
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your_key_here}
+    depends_on:
+      - db
+  frontend:
+    image: node:20
+    working_dir: /app/frontend
+    volumes:
+      - .:/app
+    ports:
+      - "5173:5173"
+    command: >
+      bash -c "npm install && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  pgdata:
