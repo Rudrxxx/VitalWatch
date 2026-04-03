@@ -1,282 +1,228 @@
 import { useState, useEffect, useRef } from 'react';
 import { getAnalytics } from '../lib/api';
-import { 
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, 
-    Scatter, ScatterChart, ZAxis, ReferenceLine 
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell, ReferenceLine, ScatterChart,
+  Scatter, ZAxis
 } from 'recharts';
 
-// Custom Hook for smooth Counter animations
 function useCountUp(target, duration = 1500, triggered = true) {
-    const [count, setCount] = useState(0);
-
-    useEffect(() => {
-        if (!triggered || target === undefined || target === null) return;
-        let start = null;
-        let animationFrameId;
-
-        const animate = (timestamp) => {
-            if (!start) start = timestamp;
-            const progress = timestamp - start;
-            const percentage = Math.min(progress / duration, 1);
-            
-            const easeOut = percentage === 1 ? 1 : 1 - Math.pow(2, -10 * percentage);
-            setCount(easeOut * target);
-
-            if (percentage < 1) {
-                animationFrameId = window.requestAnimationFrame(animate);
-            } else {
-                setCount(target);
-            }
-        };
-
-        animationFrameId = window.requestAnimationFrame(animate);
-        return () => window.cancelAnimationFrame(animationFrameId);
-    }, [target, duration, triggered]);
-
-    return count;
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!triggered || !target) return;
+    let start = null;
+    let id;
+    const animate = (ts) => {
+      if (!start) start = ts;
+      const p = Math.min((ts - start) / duration, 1);
+      const ease = 1 - Math.pow(2, -10 * p);
+      setCount(ease * target);
+      if (p < 1) id = requestAnimationFrame(animate);
+      else setCount(target);
+    };
+    id = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(id);
+  }, [target, duration, triggered]);
+  return count;
 }
 
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-gray-950 border border-gray-700 rounded px-3 py-2 text-xs font-mono">
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color }}>{p.name}: {typeof p.value === 'number' ? p.value.toFixed(2) : p.value}</div>
+      ))}
+    </div>
+  );
+};
+
 export default function AnalyticsPage() {
-    const [analyticsData, setAnalyticsData] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [statsVisible, setStatsVisible] = useState(false);
-    const statsRef = useRef(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [visible, setVisible] = useState(false);
+  const statsRef = useRef(null);
 
-    useEffect(() => {
-        getAnalytics().then(data => {
-            setAnalyticsData(data);
-            setLoading(false);
-        }).catch(err => {
-            console.error("Error fetching analytics:", err);
-            setLoading(false);
-        });
-    }, []);
+  useEffect(() => {
+    getAnalytics()
+      .then(d => { setData(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, []);
 
-    useEffect(() => {
-        const observer = new IntersectionObserver(([entry]) => {
-            if (entry.isIntersecting) {
-                setStatsVisible(true);
-            }
-        }, { threshold: 0.1 });
+  useEffect(() => {
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) setVisible(true); }, { threshold: 0.1 });
+    if (statsRef.current) obs.observe(statsRef.current);
+    return () => obs.disconnect();
+  }, [loading]);
 
-        if (statsRef.current) {
-            observer.observe(statsRef.current);
-        }
-        return () => observer.disconnect();
-    }, [loading]);
+  const totalCases = data?.total_cases || 0;
+  const totalRows = data?.total_rows || 0;
+  const iohRate = ((data?.overall_ioh_rate || 0) * 100);
+  const avgRisk = data?.per_case?.length
+    ? (data.per_case.reduce((a, c) => a + (c.avg_risk || 0), 0) / data.per_case.length) * 100
+    : 0;
 
-    const totalCases = analyticsData?.total_cases || 0;
-    const totalSeconds = analyticsData?.total_rows || 0;
-    const overallIohRate = (analyticsData?.overall_ioh_rate || 0) * 100;
-    
-    let avgRisk = 0;
-    if (analyticsData?.per_case?.length > 0) {
-        avgRisk = (analyticsData.per_case.reduce((acc, c) => acc + (c.avg_risk || 0), 0) / analyticsData.per_case.length) * 100;
-    }
+  const cCases = useCountUp(totalCases, 1500, visible);
+  const cRows = useCountUp(totalRows, 2000, visible);
+  const cIoh = useCountUp(iohRate, 1500, visible);
+  const cRisk = useCountUp(avgRisk, 1500, visible);
 
-    const cTotalCases = useCountUp(totalCases, 1500, statsVisible);
-    const cTotalSeconds = useCountUp(totalSeconds, 2000, statsVisible);
-    const cOverallIohRate = useCountUp(overallIohRate, 1500, statsVisible);
-    const cAvgRisk = useCountUp(avgRisk, 1500, statsVisible);
+  // MAP histogram data
+  const mapHistData = data?.map_distribution?.bins?.length
+    ? data.map_distribution.bins.slice(0, -1).map((b, i) => ({
+        range: `${Math.round(b)}-${Math.round(data.map_distribution.bins[i + 1])}`,
+        count: data.map_distribution.counts[i] || 0,
+      }))
+    : [];
 
-    if (loading) return (
-        <div className="min-h-screen bg-black flex items-center justify-center text-cyan-400 font-mono tracking-widest text-sm uppercase">
-            Parsing Cohort Telemetry...
+  // IOH per patient (top 20 by ioh_rate)
+  const iohPerPatient = data?.per_case
+    ? [...data.per_case].sort((a, b) => b.ioh_rate - a.ioh_rate).slice(0, 20).map(c => ({
+        name: `#${c.case_id}`,
+        ioh: (c.ioh_rate * 100).toFixed(1),
+        color: c.ioh_rate < 0.1 ? '#22c55e' : c.ioh_rate < 0.2 ? '#f59e0b' : '#ef4444',
+      }))
+    : [];
+
+  // Risk distribution
+  const riskHistData = data?.risk_distribution?.bins?.length
+    ? data.risk_distribution.bins.slice(0, -1).map((b, i) => ({
+        range: b.toFixed(2),
+        count: data.risk_distribution.counts[i] || 0,
+      }))
+    : [];
+
+  if (loading) return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="text-cyan-400 font-mono text-sm animate-pulse">Loading analytics...</div>
+    </div>
+  );
+
+  if (error) return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="text-red-400 font-mono text-sm">Error: {error}<br />Is the backend running on port 8000?</div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-black pt-16">
+      {/* Header */}
+      <div className="border-b border-gray-900 px-8 py-10">
+        <div className="text-xs text-cyan-400 tracking-widest uppercase mb-2">Population Intelligence</div>
+        <h1 className="text-3xl font-bold text-white font-mono">Analytics Observatory</h1>
+        <p className="text-gray-500 text-sm mt-1">Aggregated insights from {totalCases} surgical cases · {totalRows.toLocaleString()} data points</p>
+      </div>
+
+      {/* Stats row */}
+      <div ref={statsRef} className="grid grid-cols-2 md:grid-cols-4 gap-px bg-gray-900 border-b border-gray-900">
+        {[
+          { label: 'Total Cases', val: Math.floor(cCases), suffix: '' },
+          { label: 'Data Points', val: Math.floor(cRows).toLocaleString(), suffix: '' },
+          { label: 'Overall IOH Rate', val: cIoh.toFixed(1), suffix: '%' },
+          { label: 'Avg Risk Score', val: cRisk.toFixed(1), suffix: '%' },
+        ].map(({ label, val, suffix }) => (
+          <div key={label} className="bg-black px-8 py-8">
+            <div className="text-4xl font-mono text-cyan-400 font-bold">{val}{suffix}</div>
+            <div className="text-gray-500 text-xs uppercase tracking-widest mt-2">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="px-8 py-8 space-y-6">
+        {/* Row 1: MAP Distribution + IOH per Patient */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* MAP Distribution */}
+          <div className="bg-gray-950 border border-gray-800 rounded-lg p-6">
+            <div className="text-xs text-cyan-400 tracking-widest uppercase mb-1">MAP Distribution</div>
+            <div className="text-gray-500 text-xs mb-4">Mean Arterial Pressure across all surgical seconds</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={mapHistData} margin={{ top: 5, right: 5, left: -20, bottom: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#111" vertical={false} />
+                <XAxis dataKey="range" stroke="#444" tick={{ fill: '#555', fontSize: 9 }} angle={-45} textAnchor="end" />
+                <YAxis stroke="#444" tick={{ fill: '#555', fontSize: 10 }} />
+                <Tooltip content={<CustomTooltip />} />
+                <ReferenceLine x="60-68" stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'IOH', fill: '#ef4444', fontSize: 10 }} />
+                <Bar dataKey="count" fill="#00E5FF" opacity={0.7} radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* IOH Rate per Patient */}
+          <div className="bg-gray-950 border border-gray-800 rounded-lg p-6">
+            <div className="text-xs text-cyan-400 tracking-widest uppercase mb-1">IOH Rate by Patient</div>
+            <div className="text-gray-500 text-xs mb-4">Top 20 cases sorted by hypotension frequency</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={iohPerPatient} layout="vertical" margin={{ top: 5, right: 40, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#111" horizontal={false} />
+                <XAxis type="number" stroke="#444" tick={{ fill: '#555', fontSize: 10 }} unit="%" />
+                <YAxis type="category" dataKey="name" stroke="#444" tick={{ fill: '#666', fontSize: 9 }} width={30} />
+                <Tooltip content={<CustomTooltip />} />
+                <Bar dataKey="ioh" radius={[0, 2, 2, 0]}>
+                  {iohPerPatient.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="flex gap-4 mt-3 text-xs text-gray-500">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-500 rounded-full inline-block"/> &lt;10%</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-amber-500 rounded-full inline-block"/> 10–20%</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 bg-red-500 rounded-full inline-block"/> &gt;20%</span>
+            </div>
+          </div>
         </div>
-    );
-    
-    if (!analyticsData) return <div className="min-h-screen bg-black" />;
 
-    let mapDistData = [];
-    if (analyticsData.map_distribution?.counts) {
-        mapDistData = analyticsData.map_distribution.counts.map((count, i) => ({
-            bin: analyticsData.map_distribution.bins[i]?.toFixed(0) || '',
-            count
-        }));
-    }
-
-    let iohByPatientData = [];
-    if (analyticsData.per_case) {
-        iohByPatientData = [...analyticsData.per_case]
-            .sort((a, b) => b.ioh_rate - a.ioh_rate)
-            .slice(0, 20)
-            .map(c => ({
-                name: `Case ${c.case_id}`,
-                rate: c.ioh_rate * 100
-            }));
-    }
-
-    let riskDistData = [];
-    if (analyticsData.risk_distribution?.counts) {
-        riskDistData = analyticsData.risk_distribution.counts.map((count, i) => {
-            const binCenter = analyticsData.risk_distribution.bins[i] || 0;
-            const probIOH = Math.min(binCenter * 1.5, 1); 
-            return {
-                bin: binCenter.toFixed(2),
-                ioh_0: Math.floor(count * (1 - probIOH)),
-                ioh_1: Math.floor(count * probIOH)
-            };
-        });
-    }
-
-    const mockScatter = Array.from({ length: 350 }).map(() => {
-        const map = 45 + Math.random() * 65;
-        const hr = 45 + Math.random() * 75;
-        const risk = map < 65 ? 0.6 + Math.random()*0.4 : (Math.random() * 0.5);
-        return {
-            MAP_current: map,
-            HR_current: hr,
-            predicted_prob: risk * 100,
-            riskLevel: risk > 0.6 ? 'high' : risk > 0.4 ? 'medium' : 'low'
-        };
-    });
-    
-    return (
-        <div className="bg-black min-h-screen pt-20 pb-12 font-mono text-gray-200">
-            {/* Header */}
-            <div className="py-8 px-8 max-w-[1600px] mx-auto">
-                <h1 className="text-3xl font-mono text-white tracking-widest uppercase mb-2 shadow-cyan-400">Population Analytics</h1>
-                <p className="text-gray-500 text-sm">Aggregated cohort observations and predictive model performance telemetry.</p>
-            </div>
-
-            {/* Stats Row */}
-            <div ref={statsRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 px-8 mb-10 max-w-[1600px] mx-auto">
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 flex flex-col justify-between shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-                    <div className="text-4xl font-mono text-cyan-400 font-bold mb-3 tracking-tighter">
-                        {Math.floor(cTotalCases).toLocaleString()}
-                    </div>
-                    <div className="text-gray-500 text-[11px] tracking-widest uppercase font-bold">Total Processed Cases</div>
-                </div>
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 flex flex-col justify-between shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-                    <div className="text-4xl font-mono text-cyan-400 font-bold mb-3 tracking-tighter">
-                        {Math.floor(cTotalSeconds).toLocaleString()}
-                    </div>
-                    <div className="text-gray-500 text-[11px] tracking-widest uppercase font-bold">Total Surgical Seconds</div>
-                </div>
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 flex flex-col justify-between shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-                    <div className="text-4xl font-mono text-cyan-400 font-bold mb-3 tracking-tighter">
-                        {cOverallIohRate.toFixed(1)}%
-                    </div>
-                    <div className="text-gray-500 text-[11px] tracking-widest uppercase font-bold">Global Baseline IOH Rate</div>
-                </div>
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 flex flex-col justify-between shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-                    <div className="text-4xl font-mono text-cyan-400 font-bold mb-3 tracking-tighter">
-                        {cAvgRisk.toFixed(1)}%
-                    </div>
-                    <div className="text-gray-500 text-[11px] tracking-widest uppercase font-bold">Average Predicted Cohort Risk</div>
-                </div>
-            </div>
-
-            {/* Charts Row 1 */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 px-8 mb-10 max-w-[1600px] mx-auto">
-                {/* Chart A: MAP Distribution */}
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 shadow-xl">
-                    <h3 className="font-mono text-white text-xs mb-6 uppercase tracking-widest flex items-center font-bold">
-                        <div className="w-2 h-2 bg-cyan-400 rounded-full mr-3 animate-pulse shadow-[0_0_8px_rgba(0,229,255,0.8)]" />
-                        MAP Distribution Density
-                    </h3>
-                    <div className="h-[300px] w-full mt-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={mapDistData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                                <XAxis dataKey="bin" stroke="#555" tick={{fill: '#888', fontSize: 10}} dy={10} />
-                                <YAxis stroke="#555" tick={{fill: '#888', fontSize: 10}} dx={-5} />
-                                <Tooltip 
-                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.9)', borderColor: '#333', borderRadius: '6px' }}
-                                    itemStyle={{ fontSize: '13px', fontWeight: 'bold' }}
-                                    cursor={{fill: 'rgba(0,229,255,0.08)'}}
-                                />
-                                <ReferenceLine x="65" stroke="#ef4444" strokeDasharray="4 4" strokeWidth={1.5} label={{ position: 'top', value: 'IOH THRESHOLD', fill: '#ef4444', fontSize: 10, fontWeight: 'bold' }} />
-                                <Bar dataKey="count" fill="#00E5FF" fillOpacity={0.7} radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                </div>
-
-                {/* Chart B: IOH By Patient */}
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-6 shadow-xl">
-                    <h3 className="font-mono text-white text-xs mb-6 uppercase tracking-widest flex items-center font-bold">
-                        <div className="w-2 h-2 bg-amber-400 rounded-full mr-3 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.8)]" />
-                        IOH Rate by Patient Cluster
-                    </h3>
-                    <div className="h-[300px] w-full mt-2">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={iohByPatientData} layout="vertical" margin={{ top: 0, right: 20, left: 10, bottom: 0 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#222" horizontal={false} />
-                                <XAxis type="number" stroke="#555" tick={{fill: '#888', fontSize: 10}} domain={[0, 100]} />
-                                <YAxis type="category" dataKey="name" stroke="#555" tick={{fill: '#888', fontSize: 10}} width={65} />
-                                <Tooltip 
-                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.9)', borderColor: '#333', borderRadius: '6px' }}
-                                    itemStyle={{ fontSize: '13px', fontWeight: 'bold' }}
-                                    cursor={{fill: 'rgba(255,255,255,0.05)'}}
-                                />
-                                <Bar dataKey="rate" radius={[0, 4, 4, 0]}>
-                                    {iohByPatientData.map((entry, index) => {
-                                        let color = '#ef4444'; 
-                                        if (entry.rate < 10) color = '#22c55e';
-                                        else if (entry.rate < 20) color = '#f59e0b';
-                                        return <Cell key={`cell-${index}`} fill={color} fillOpacity={0.85} />;
-                                    })}
-                                </Bar>
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                </div>
-            </div>
-
-            {/* Charts Row 2 */}
-            <div className="px-8 mb-10 max-w-[1600px] mx-auto">
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-8 shadow-xl w-full">
-                    <h3 className="font-mono text-white text-xs mb-6 uppercase tracking-widest flex items-center font-bold">
-                        <div className="w-2 h-2 bg-red-500 rounded-full mr-3 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
-                        Risk Score Distribution 
-                        <span className="text-gray-600 text-[10px] ml-4 font-normal">(Simulated Sub-cohort Overlap)</span>
-                    </h3>
-                    <div className="h-[350px] w-full mt-4">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={riskDistData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                                <XAxis dataKey="bin" stroke="#555" tick={{fill: '#888', fontSize: 10}} dy={10} />
-                                <YAxis stroke="#555" tick={{fill: '#888', fontSize: 10}} dx={-5} />
-                                <Tooltip 
-                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.95)', borderColor: '#333', borderRadius: '6px' }}
-                                    itemStyle={{ fontSize: '13px', fontWeight: 'bold' }}
-                                    cursor={{fill: 'rgba(255,255,255,0.05)'}}
-                                />
-                                <Bar dataKey="ioh_0" stackId="a" fill="#00E5FF" fillOpacity={0.4} name="Stable Maintenance (No IOH)" radius={[0, 0, 0, 0]} />
-                                <Bar dataKey="ioh_1" stackId="a" fill="#ef4444" fillOpacity={0.6} name="Hypotensive Crisis (IOH Occurred)" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                </div>
-            </div>
-
-            {/* 3D Scatter Landscape */}
-            <div className="px-8 pb-12 max-w-[1600px] mx-auto">
-                <div className="bg-gray-950 border border-gray-800 rounded-lg p-10 shadow-2xl w-full">
-                    <h3 className="font-mono text-white text-xl mb-2 uppercase tracking-widest font-bold">3D Risk Landscape Topology</h3>
-                    <p className="text-gray-500 text-[11px] mb-8 uppercase tracking-widest">MAP vs Heart Rate vs Neural Prediction Boundary — Mapping each discrete surgical second</p>
-                    
-                    <div className="h-[550px] w-full relative">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <ScatterChart margin={{ top: 20, right: 20, left: -10, bottom: 10 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                                <XAxis type="number" dataKey="MAP_current" name="MAP" stroke="#555" tick={{fill: '#888', fontSize: 11}} domain={[40, 110]} unit=" mmHg" />
-                                <YAxis type="number" dataKey="HR_current" name="Heart Rate" stroke="#555" tick={{fill: '#888', fontSize: 11}} domain={[40, 130]} unit=" bpm" />
-                                <ZAxis type="number" dataKey="predicted_prob" range={[50, 450]} name="Predicted Crisis Probability" />
-                                <Tooltip 
-                                    cursor={{strokeDasharray: '3 3'}}
-                                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.95)', borderColor: '#333', borderRadius: '8px', padding: '16px' }}
-                                    itemStyle={{ fontSize: '13px', fontWeight: 'bold' }}
-                                />
-                                <Scatter name="Low Risk Cluster" data={mockScatter.filter(d => d.riskLevel === 'low')} fill="#22c55e" fillOpacity={0.4} />
-                                <Scatter name="Medium Risk Cluster" data={mockScatter.filter(d => d.riskLevel === 'medium')} fill="#f59e0b" fillOpacity={0.5} />
-                                <Scatter name="High Risk Cluster" data={mockScatter.filter(d => d.riskLevel === 'high')} fill="#ef4444" fillOpacity={0.7} />
-                            </ScatterChart>
-                        </ResponsiveContainer>
-                    </div>
-                </div>
-            </div>
+        {/* Row 2: Risk Distribution */}
+        <div className="bg-gray-950 border border-gray-800 rounded-lg p-6">
+          <div className="text-xs text-cyan-400 tracking-widest uppercase mb-1">Risk Score Distribution</div>
+          <div className="text-gray-500 text-xs mb-4">Predicted IOH probability across all data points</div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={riskHistData} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#111" vertical={false} />
+              <XAxis dataKey="range" stroke="#444" tick={{ fill: '#555', fontSize: 10 }} />
+              <YAxis stroke="#444" tick={{ fill: '#555', fontSize: 10 }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="count" radius={[2, 2, 0, 0]}>
+                {riskHistData.map((entry, i) => {
+                  const val = parseFloat(entry.range);
+                  const color = val > 0.6 ? '#ef4444' : val > 0.4 ? '#f59e0b' : '#00E5FF';
+                  return <Cell key={i} fill={color} opacity={0.7} />;
+                })}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
-    );
+
+        {/* Row 3: Per-case risk summary table */}
+        <div className="bg-gray-950 border border-gray-800 rounded-lg p-6">
+          <div className="text-xs text-cyan-400 tracking-widest uppercase mb-4">Case Summary Table</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="border-b border-gray-800 text-gray-500 uppercase tracking-widest">
+                  <th className="text-left py-2 pr-4">Case ID</th>
+                  <th className="text-right py-2 pr-4">Duration (rows)</th>
+                  <th className="text-right py-2 pr-4">IOH Rate</th>
+                  <th className="text-right py-2 pr-4">Avg Risk</th>
+                  <th className="text-right py-2">Max Risk</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.per_case || []).map(c => (
+                  <tr key={c.case_id} className="border-b border-gray-900 hover:bg-gray-900 transition-colors">
+                    <td className="py-1.5 pr-4 text-cyan-400">#{c.case_id}</td>
+                    <td className="py-1.5 pr-4 text-right text-gray-400">{c.row_count?.toLocaleString()}</td>
+                    <td className="py-1.5 pr-4 text-right" style={{ color: c.ioh_rate > 0.2 ? '#ef4444' : c.ioh_rate > 0.1 ? '#f59e0b' : '#22c55e' }}>
+                      {((c.ioh_rate || 0) * 100).toFixed(1)}%
+                    </td>
+                    <td className="py-1.5 pr-4 text-right text-gray-300">{((c.avg_risk || 0) * 100).toFixed(1)}%</td>
+                    <td className="py-1.5 text-right text-gray-300">{((c.max_risk || 0) * 100).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
