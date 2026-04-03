@@ -1,6 +1,50 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
 @import "tailwindcss";
 
-body {
-  font-family: 'IBM Plex Mono', monospace;
+*, *::before, *::after {
+  box-sizing: border-box;
 }
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #000;
+  color: #fff;
+  font-family: 'IBM Plex Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #000; }
+::-webkit-scrollbar-thumb { background: #00E5FF44; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #00E5FF88; }
+
+/* Cyan glow utility */
+.glow-cyan { box-shadow: 0 0 20px rgba(0,229,255,0.3); }
+.text-glow-cyan { text-shadow: 0 0 20px rgba(0,229,255,0.5); }
+
+/* ECG animation */
+@keyframes ecg-sweep {
+  0% { stroke-dashoffset: 2000; }
+  100% { stroke-dashoffset: -2000; }
+}
+.ecg-line {
+  stroke-dasharray: 2000;
+  animation: ecg-sweep 4s linear infinite;
+}
+
+/* Pulse ring for alerts */
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* Typing cursor blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink { animation: blink 1s step-end infinite; }
